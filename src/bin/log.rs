@@ -2,11 +2,11 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::fmt::Write;
 
-use clap::{App, SubCommand, ArgMatches};
+use clap::{App, ArgMatches, SubCommand};
 use futures::prelude::*;
 use futures::stream;
 
-use attaca::marshal::{ObjectHash, CommitObject};
+use attaca::marshal::{CommitObject, ObjectHash};
 use attaca::Repository;
 
 use errors::*;
@@ -73,7 +73,7 @@ pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
 
         ctx.close().wait()?;
 
-        commits
+        commits.into_sorted_vec()
     };
 
     let mut buf = String::new();
@@ -88,7 +88,7 @@ pub fn go(repository: &mut Repository, _matches: &ArgMatches) -> Result<()> {
         )?;
     }
 
-    for TimeOrdered { hash, commit } in commits {
+    for TimeOrdered { hash, commit } in commits.into_iter().rev() {
         write!(
             buf,
             "\ncommit {}\nDate: {}\n\t{}\n",
