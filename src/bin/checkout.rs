@@ -1,12 +1,12 @@
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 
-use clap::{App, SubCommand, Arg, ArgMatches};
+use clap::{App, Arg, ArgMatches, SubCommand};
 use memmap::{Mmap, Protection};
 use futures::prelude::*;
 
 use attaca::context::Context;
-use attaca::marshal::{ObjectHash, Object, DataObject, SubtreeObject, SubtreeEntry};
+use attaca::marshal::{DataObject, Object, ObjectHash, SubtreeEntry, SubtreeObject};
 use attaca::repository::Repository;
 use attaca::store::ObjectStore;
 use attaca::trace::Trace;
@@ -16,12 +16,13 @@ use errors::*;
 
 pub fn command() -> App<'static, 'static> {
     SubCommand::with_name("checkout")
-        .help(
-            "Checkout a file or working directory from a previous revision.",
+        .help("Checkout a file or working directory from a previous revision.")
+        .arg(
+            Arg::with_name("COMMIT")
+                .index(1)
+                .required(true)
+                .help("The commit hash to checkout."),
         )
-        .arg(Arg::with_name("COMMIT").index(1).required(true).help(
-            "The commit hash to checkout.",
-        ))
 }
 
 
@@ -40,7 +41,7 @@ fn write_data_object<T: Trace, S: ObjectStore>(
         .write(true)
         .create(true)
         .truncate(true)
-        .open(path)?;
+        .open(&path)?;
     file.set_len(size)?;
 
     // PermissionError indicates mmap opened with wrong permissions.
@@ -51,11 +52,12 @@ fn write_data_object<T: Trace, S: ObjectStore>(
     while let Some((mut offset, object_hash)) = stack.pop() {
         match ctx.read_object(object_hash).wait()? {
             Object::Data(DataObject::Small(small_object)) => {
-                slice[offset as usize..].copy_from_slice(&small_object.chunk);
+                slice[offset as usize..(offset as usize + small_object.chunk.len())]
+                    .copy_from_slice(&small_object.chunk);
             }
             Object::Data(DataObject::Large(large_object)) => {
                 for (child_size, child_hash) in large_object.children {
-                    stack.push((child_size, child_hash));
+                    stack.push((offset, child_hash));
                     offset += child_size;
                 }
             }
@@ -82,21 +84,19 @@ pub fn go(repository: &mut Repository, matches: &ArgMatches) -> Result<()> {
         let mut stack = vec![(PathBuf::new(), commit_object.subtree)];
         while let Some((path, object)) = stack.pop() {
             match ctx.read_object(object).wait()? {
-                Object::Subtree(SubtreeObject { entries }) => {
-                    for (component, entry) in entries {
-                        let joined = path.join(component);
+                Object::Subtree(SubtreeObject { entries }) => for (component, entry) in entries {
+                    let joined = path.join(component);
 
-                        match entry {
-                            SubtreeEntry::File(object_hash, size) => {
-                                write_data_object(&ctx, joined, object_hash, size)
-                                    .chain_err(|| "While trying to write file")?;
-                            }
-                            SubtreeEntry::Subtree(object_hash) => {
-                                stack.push((joined, object_hash));
-                            }
+                    match entry {
+                        SubtreeEntry::File(object_hash, size) => {
+                            write_data_object(&ctx, joined, object_hash, size)
+                                .chain_err(|| "While trying to write file")?;
+                        }
+                        SubtreeEntry::Subtree(object_hash) => {
+                            stack.push((joined, object_hash));
                         }
                     }
-                }
+                },
                 _ => bail!("Invalid subtree!"),
             }
         }
